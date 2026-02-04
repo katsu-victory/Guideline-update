@@ -70,19 +70,33 @@ def check_site(target):
     return found_items
 
 def generate_html(df):
-    """CSVからHTMLを生成。列名の不一致を補正する。"""
+    """CSVからHTMLを生成。列名の不一致を強力に補正する。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # 列名の正規化（古い「内容」列などを「タイトル内容」に統一）
-    rename_map = {"内容": "タイトル内容", "GL名": "タイトル内容"}
-    df = df.rename(columns=rename_map)
-    
-    # 必要な列が欠けている場合の補完
-    for col in ["ステータス", "出版社", "タイトル内容", "検知日"]:
-        if col not in df.columns:
-            df[col] = "-"
-    
-    df = df.fillna("-")
+    # 重要な列の抽出ロジック
+    display_data = []
+    for _, row in df.iterrows():
+        # タイトルとして使えるものを探す
+        title = "-"
+        for col in ["タイトル内容", "内容", "GL名"]:
+            if col in row and pd.notna(row[col]) and row[col] != "-":
+                title = str(row[col])
+                break
+        
+        # 検知日として使えるものを探す
+        date = "-"
+        for col in ["検知日", "確認日時"]:
+            if col in row and pd.notna(row[col]) and row[col] != "-":
+                date = str(row[col])
+                break
+
+        display_data.append({
+            "status": str(row.get("ステータス", "既知")),
+            "publisher": str(row.get("出版社", "-")),
+            "title": title,
+            "url": str(row.get("URL", "#")),
+            "date": date
+        })
 
     html_content = f"""
     <!DOCTYPE html>
@@ -101,36 +115,34 @@ def generate_html(df):
                 <table class="min-w-full divide-y divide-gray-200">
                     <thead class="bg-gray-100">
                         <tr>
-                            <th class="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">状態</th>
-                            <th class="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">出版社</th>
-                            <th class="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">タイトル・内容</th>
-                            <th class="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">検知日</th>
+                            <th class="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">状態</th>
+                            <th class="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">出版社</th>
+                            <th class="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">タイトル・内容</th>
+                            <th class="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">検知日</th>
                         </tr>
                     </thead>
                     <tbody class="bg-white divide-y divide-gray-200">
     """
-    for _, row in df.iterrows():
-        status = str(row['ステータス'])
-        status_cls = "bg-red-500 text-white" if "新着" in status else "bg-gray-200 text-gray-600"
-        url = row['URL'] if 'URL' in row and row['URL'] != "-" else "#"
+    for row in display_data:
+        status_cls = "bg-red-500 text-white font-bold" if "新着" in row['status'] else "bg-gray-200 text-gray-600"
         
         html_content += f"""
                         <tr class="hover:bg-gray-50 transition-colors">
-                            <td class="px-6 py-4 whitespace-nowrap"><span class="px-3 py-1 rounded-full text-xs font-bold {status_cls}">{status}</span></td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-800">{row['出版社']}</td>
+                            <td class="px-6 py-4 whitespace-nowrap"><span class="px-3 py-1 rounded-full text-xs {status_cls}">{row['status']}</span></td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-800">{row['publisher']}</td>
                             <td class="px-6 py-4 text-sm text-gray-700">
-                                <a href="{url}" target="_blank" class="text-blue-600 hover:text-blue-800 font-medium">
-                                    {row['タイトル内容']}
+                                <a href="{row['url']}" target="_blank" class="text-blue-600 hover:text-blue-800 font-medium">
+                                    {row['title']}
                                 </a>
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{row['検知日']}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{row['date']}</td>
                         </tr>
         """
     html_content += """
                     </tbody>
                 </table>
             </div>
-            <div class="mt-6 text-center text-gray-400 text-xs">
+            <div class="mt-6 text-center text-gray-400 text-xs text-blue-500">
                 ※URLをクリックすると各サイトの新着ページへ飛びます
             </div>
         </div>
@@ -145,6 +157,7 @@ def main():
     new_discoveries = []
     today = datetime.now().strftime("%Y-%m-%d")
     
+    # クローリング実行
     for target in TARGETS:
         site_name = target["name"]
         items = check_site(target)
@@ -160,26 +173,49 @@ def main():
     
     save_history(history)
     
+    # 既存レポートの読み込みとクリーンアップ
     if os.path.exists(REPORT_FILE):
         try:
             old_df = pd.read_csv(REPORT_FILE)
-            # 古いデータのステータス更新
+            
+            # 列名の統合（古い列を新しい列にマッピング）
+            if "GL名" in old_df.columns and "タイトル内容" not in old_df.columns:
+                old_df = old_df.rename(columns={"GL名": "タイトル内容"})
+            if "内容" in old_df.columns and "タイトル内容" not in old_df.columns:
+                old_df = old_df.rename(columns={"内容": "タイトル内容"})
+            if "確認日時" in old_df.columns and "検知日" not in old_df.columns:
+                old_df = old_df.rename(columns={"確認日時": "検知日"})
+
+            # ステータスの更新
             if "ステータス" in old_df.columns:
                 old_df["ステータス"] = "既知"
-            # 新旧データの統合
-            df = pd.concat([pd.DataFrame(new_discoveries), old_df], ignore_index=True)
-        except:
+            else:
+                old_df["ステータス"] = "既知"
+
+            # 必要な列だけに絞り込む
+            valid_cols = ["ステータス", "出版社", "タイトル内容", "URL", "検知日"]
+            # 存在しない列は空で作成
+            for col in valid_cols:
+                if col not in old_df.columns:
+                    old_df[col] = "-"
+            
+            old_df = old_df[valid_cols]
+            
+            # 新規データとの統合
+            new_df = pd.DataFrame(new_discoveries)
+            if not new_df.empty:
+                df = pd.concat([new_df, old_df], ignore_index=True)
+            else:
+                df = old_df
+        except Exception as e:
+            print(f"CSV修復中にエラー: {e}")
             df = pd.DataFrame(new_discoveries)
     else:
         df = pd.DataFrame(new_discoveries)
     
     if not df.empty:
-        # 重複行を削除（タイトル内容が同じものはまとめる）
-        if "タイトル内容" in df.columns:
-            df = df.drop_duplicates(subset=["タイトル内容"], keep="first")
-        elif "内容" in df.columns:
-            df = df.drop_duplicates(subset=["内容"], keep="first")
-            
+        # 重複削除
+        df = df.drop_duplicates(subset=["タイトル内容"], keep="first")
         df.to_csv(REPORT_FILE, index=False, encoding="utf-8-sig")
         generate_html(df.head(100))
     
