@@ -13,10 +13,10 @@ jobs:
       contents: write # 実行結果をリポジトリに保存するために必要
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # v3からv4に更新
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # v4からv5に更新
         with:
           python-version: '3.9'
 
@@ -40,7 +40,7 @@ jobs:
 
       - name: Upload report as artifact
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4 # v3からv4に更新
         with:
           name: update-report
           path: update_report.csv
