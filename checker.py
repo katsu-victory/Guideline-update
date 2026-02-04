@@ -65,7 +65,7 @@ def format_date_string(date_str):
     nums = re.findall(r'\d+', date_str)
     if len(nums) >= 1:
         year = int(nums[0])
-        # 異常な西暦は除外（ガイドラインの文脈で妥当な範囲）
+        # 異常な西暦は除外
         if not (2000 <= year <= 2100): return "-"
         
         month = nums[1].zfill(2) if len(nums) > 1 else "01"
@@ -97,7 +97,6 @@ def clean_title(text):
     text = re.sub(r'(定価|本体|税込|税別)[:：]?\s?[0-9,]+円?.*', '', text)
     # 著者・編集情報が長すぎる場合
     text = re.sub(r'(?:編集|発行|著者|訳|監修)\)?[:：].*', '', text)
-    
     # 発売日などのラベル単体が残った場合
     text = re.sub(r'(?:発売日|発行日|刊行日|出版日|更新日)[:：]\s*$', '', text)
     
@@ -116,16 +115,13 @@ def check_site(target):
             selectors = target.get("selector", "li, tr, div").split(",")
             for sel in selectors:
                 for element in soup.select(sel.strip()):
-                    # HTMLの改行を考慮してテキスト取得
                     text = element.get_text(separator=" ").strip()
                     if any(kw in text for kw in KEYWORDS):
                         if 10 < len(text) < 800:
-                            # 1. まず日付を抽出（クリーンアップ前に行う）
                             pub_date = extract_date_stricter(text)
-                            # 2. タイトルをクリーンアップ
                             cleaned = clean_title(text)
                             
-                            # タイトルから特定の日付文字列を除去（表示をスッキリさせる）
+                            # タイトルから特定の日付文字列を除去
                             if pub_date != "-":
                                 date_parts = pub_date.split('/')
                                 for p in date_parts:
@@ -167,7 +163,7 @@ def check_site(target):
     return found_items
 
 def generate_html(df):
-    """リッチなダッシュボードHTMLを生成。"""
+    """リッチでソート可能なダッシュボードHTMLを生成。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     
     display_data = []
@@ -201,6 +197,9 @@ def generate_html(df):
             .status-new {{ background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%); color: white; }}
             .status-old {{ background-color: #f3f4f6; color: #6b7280; }}
             .pub-date-box {{ font-family: 'Courier New', Courier, monospace; }}
+            th.sortable {{ cursor: pointer; position: relative; }}
+            th.sortable:hover {{ background-color: #1e3a8a; }}
+            th.sortable::after {{ content: ' ↕'; font-size: 0.8em; opacity: 0.5; }}
         </style>
     </head>
     <body class="bg-gray-100 p-4 md:p-10 text-gray-800">
@@ -218,14 +217,14 @@ def generate_html(df):
             
             <div class="bg-white shadow-2xl rounded-3xl overflow-hidden border border-gray-200">
                 <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200">
+                    <table class="min-w-full divide-y divide-gray-200" id="mainTable">
                         <thead>
                             <tr class="bg-blue-900 text-white shadow-md">
-                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Status</th>
-                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Publisher</th>
-                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Pub Date</th>
-                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Content Title</th>
-                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Detected</th>
+                                <th onclick="sortTable(0)" class="sortable px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Status</th>
+                                <th onclick="sortTable(1)" class="sortable px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Publisher</th>
+                                <th onclick="sortTable(2)" class="sortable px-6 py-5 text-left text-xs font-black uppercase tracking-tighter text-blue-200">Pub Date</th>
+                                <th onclick="sortTable(3)" class="sortable px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Content Title</th>
+                                <th onclick="sortTable(4)" class="sortable px-6 py-5 text-left text-xs font-black uppercase tracking-tighter text-blue-200">Detected</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-100">
@@ -257,6 +256,45 @@ def generate_html(df):
                 &copy; 2026 診療ガイドライン更新監視システム | 毎日AM8:00自動更新
             </footer>
         </div>
+        
+        <script>
+        function sortTable(n) {
+            var table, rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
+            table = document.getElementById("mainTable");
+            switching = true;
+            dir = "asc";
+            while (switching) {
+                switching = false;
+                rows = table.rows;
+                for (i = 1; i < (rows.length - 1); i++) {
+                    shouldSwitch = false;
+                    x = rows[i].getElementsByTagName("TD")[n];
+                    y = rows[i + 1].getElementsByTagName("TD")[n];
+                    if (dir == "asc") {
+                        if (x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) {
+                            shouldSwitch = true;
+                            break;
+                        }
+                    } else if (dir == "desc") {
+                        if (x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase()) {
+                            shouldSwitch = true;
+                            break;
+                        }
+                    }
+                }
+                if (shouldSwitch) {
+                    rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
+                    switching = true;
+                    switchcount++;
+                } else {
+                    if (switchcount == 0 && dir == "asc") {
+                        dir = "desc";
+                        switching = true;
+                    }
+                }
+            }
+        }
+        </script>
     </body>
     </html>
     """
