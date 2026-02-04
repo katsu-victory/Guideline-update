@@ -23,14 +23,22 @@ TARGETS = [
 
 KEYWORDS = ["ガイドライン", "規約", "指針", "診療手引き", "診療指針", "治療指針", "作成指針"]
 
-# 日付抽出用の厳格なパターン
-# 1. 発売/発行などのキーワード付き
-STRICT_DATE_PATTERNS = [
-    r'(?:発売|発行|刊行|出版|更新|公開)(?:日|年月)?[:：\s]?(\d{4}[年/.\-]\d{1,2}(?:[月/.\-]\d{1,2}日?)?)',
+# 日付抽出用のパターン（優先度順）
+DATE_REGICES = [
+    # 1. 明示的なラベル付き（最優先）
+    r'(?:発売|発行|刊行|出版|更新|公開)(?:日|年月)?[:：\s]*(\d{4}[年/.\-]\d{1,2}(?:[月/.\-]\d{1,2}日?)?)',
+    # 2. カッコ内の日付（(2024/12) など）
+    r'[\(（](\d{4}[年/.\-]\d{1,2}(?:[月/.\-]\d{1,2}日?)?)[\)）]',
+    # 3. 一般的な日付形式
     r'(\d{4}年\s?\d{1,2}月\s?\d{1,2}日)',
     r'(\d{4}/\d{1,2}/\d{1,2})',
     r'(\d{4}\.\d{1,2}\.\d{1,2})',
-    r'(\d{4}年\d{1,2}月)', # 月まで
+    # 4. 年月のみ
+    r'(\d{4}年\s?\d{1,2}月)',
+    r'(\d{4}/\d{1,2})',
+    r'(\d{4}\.\d{1,2})',
+    # 5. タイトル内によくある「2024年版」などの年号（最終手段）
+    r'(\d{4})(?:年版|版)'
 ]
 
 HISTORY_FILE = "history.json"
@@ -51,22 +59,28 @@ def save_history(history):
         json.dump(history, f, ensure_ascii=False, indent=2)
 
 def format_date_string(date_str):
-    """日付文字列を YYYY/MM/DD に整形を試みる"""
+    """日付文字列を YYYY/MM/DD に整形する。不正な日付は弾く。"""
     if not date_str or date_str == "-": return "-"
-    # 数字以外をセパレータに置換
+    
     nums = re.findall(r'\d+', date_str)
-    if len(nums) >= 2:
-        year = nums[0]
-        month = nums[1].zfill(2)
+    if len(nums) >= 1:
+        year = int(nums[0])
+        # 異常な西暦は除外（ガイドラインの文脈で妥当な範囲）
+        if not (2000 <= year <= 2100): return "-"
+        
+        month = nums[1].zfill(2) if len(nums) > 1 else "01"
         day = nums[2].zfill(2) if len(nums) > 2 else "01"
-        # 異常な数値（西暦が1900年以前や2100年以降）は除外
-        if not (1990 <= int(year) <= 2100): return "-"
+        
+        # 月日の妥当性チェック
+        if not (1 <= int(month) <= 12): month = "01"
+        if not (1 <= int(day) <= 31): day = "01"
+        
         return f"{year}/{month}/{day}"
-    return date_str
+    return "-"
 
 def extract_date_stricter(text):
-    """より厳格に、文脈を考慮して日付を抽出する"""
-    for pattern in STRICT_DATE_PATTERNS:
+    """複数のパターンを試し、最も妥当な日付を抽出する"""
+    for pattern in DATE_REGICES:
         match = re.search(pattern, text)
         if match:
             extracted = match.group(1).strip()
@@ -76,13 +90,16 @@ def extract_date_stricter(text):
     return "-"
 
 def clean_title(text):
-    # タイトル内の余計な情報を削る
+    """タイトルの表示を綺麗にする。ノイズと抽出済みの付随情報を削る。"""
+    # ISBN
     text = re.sub(r'ISBN\s?[:：]?\s?(97[89][- ]?)?([0-9Xx][- ]?){9,13}', '', text)
+    # 価格
     text = re.sub(r'(定価|本体|税込|税別)[:：]?\s?[0-9,]+円?.*', '', text)
-    text = re.sub(r'(編集|発行|著者|訳|監修)\)?[:：].*', '', text)
-    # 既に見つかった日付部分もタイトルからは削る（重複防止）
-    for pattern in STRICT_DATE_PATTERNS:
-        text = re.sub(pattern, '', text)
+    # 著者・編集情報が長すぎる場合
+    text = re.sub(r'(?:編集|発行|著者|訳|監修)\)?[:：].*', '', text)
+    
+    # 発売日などのラベル単体が残った場合
+    text = re.sub(r'(?:発売日|発行日|刊行日|出版日|更新日)[:：]\s*$', '', text)
     
     text = " ".join(text.split())
     return text.strip()
@@ -99,11 +116,21 @@ def check_site(target):
             selectors = target.get("selector", "li, tr, div").split(",")
             for sel in selectors:
                 for element in soup.select(sel.strip()):
+                    # HTMLの改行を考慮してテキスト取得
                     text = element.get_text(separator=" ").strip()
                     if any(kw in text for kw in KEYWORDS):
-                        if 10 < len(text) < 600:
+                        if 10 < len(text) < 800:
+                            # 1. まず日付を抽出（クリーンアップ前に行う）
                             pub_date = extract_date_stricter(text)
+                            # 2. タイトルをクリーンアップ
                             cleaned = clean_title(text)
+                            
+                            # タイトルから特定の日付文字列を除去（表示をスッキリさせる）
+                            if pub_date != "-":
+                                date_parts = pub_date.split('/')
+                                for p in date_parts:
+                                    cleaned = cleaned.replace(p, "").replace(f"{int(p)}", "")
+                            
                             title_part = cleaned[:200]
                             if len(title_part) > 5:
                                 found_items.append({
@@ -113,7 +140,7 @@ def check_site(target):
             
             # フォールバック
             if not found_items:
-                for tag in soup.find_all(["a", "h3", "h4"]):
+                for tag in soup.find_all(["a", "h2", "h3", "h4"]):
                     t = tag.get_text().strip()
                     if any(kw in t for kw in KEYWORDS) and len(t) > 8:
                         found_items.append({
@@ -125,12 +152,14 @@ def check_site(target):
             last_mod = response.headers.get("Last-Modified")
             date_val = "-"
             if last_mod:
-                # RFC形式の日付を YYYY/MM/DD に変換
-                dt = email.utils.parsedate_to_datetime(last_mod)
-                date_val = dt.strftime("%Y/%m/%d")
+                try:
+                    dt = email.utils.parsedate_to_datetime(last_mod)
+                    date_val = dt.strftime("%Y/%m/%d")
+                except:
+                    date_val = "-"
             
             found_items.append({
-                "title": "【PDF更新監視】" + target["name"],
+                "title": "【PDFファイル更新監視】" + target["name"],
                 "pub_date": date_val
             })
     except Exception as e:
@@ -138,6 +167,7 @@ def check_site(target):
     return found_items
 
 def generate_html(df):
+    """リッチなダッシュボードHTMLを生成。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     
     display_data = []
@@ -148,7 +178,6 @@ def generate_html(df):
                 title = str(row[col])
                 break
         
-        # 表示データの整理
         display_data.append({
             "status": str(row.get("ステータス", "既知")),
             "publisher": str(row.get("出版社", "-")),
@@ -164,63 +193,68 @@ def generate_html(df):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>診療ガイドライン新着監視</title>
+        <title>診療ガイドライン・規約 新着監視</title>
         <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
         <style>
-            .status-new {{ background-color: #ef4444; color: white; }}
+            @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
+            body {{ font-family: 'Noto Sans JP', sans-serif; }}
+            .status-new {{ background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%); color: white; }}
             .status-old {{ background-color: #f3f4f6; color: #6b7280; }}
+            .pub-date-box {{ font-family: 'Courier New', Courier, monospace; }}
         </style>
     </head>
-    <body class="bg-gray-50 p-4 md:p-8 font-sans text-gray-900">
+    <body class="bg-gray-100 p-4 md:p-10 text-gray-800">
         <div class="max-w-7xl mx-auto">
-            <header class="flex justify-between items-end mb-8 pb-4 border-b-2 border-blue-900">
+            <header class="flex flex-col md:flex-row justify-between items-center mb-10 gap-4 border-b-4 border-blue-800 pb-6">
                 <div>
-                    <h1 class="text-3xl font-black text-blue-900">診療ガイドライン新着監視</h1>
-                    <p class="text-gray-500 mt-1">出版各社の新刊・更新情報を自動集約</p>
+                    <h1 class="text-4xl font-black text-blue-900 tracking-tighter">診療ガイドライン新着監視</h1>
+                    <p class="text-gray-500 font-bold mt-1 uppercase tracking-widest text-xs">Medical Guideline Monitoring System</p>
                 </div>
-                <div class="text-right">
-                    <p class="text-xs text-gray-400">最終巡回日時</p>
-                    <p class="font-mono text-sm font-bold">{now}</p>
+                <div class="bg-white px-6 py-2 rounded-full shadow-inner border border-gray-200">
+                    <span class="text-xs text-gray-400 block font-bold">最終巡回日時</span>
+                    <span class="font-mono text-sm font-bold text-blue-700">{now}</span>
                 </div>
             </header>
             
-            <div class="bg-white shadow-2xl rounded-2xl overflow-hidden">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead>
-                        <tr class="bg-blue-900 text-white">
-                            <th class="px-6 py-4 text-left text-xs font-bold uppercase tracking-widest">状態</th>
-                            <th class="px-6 py-4 text-left text-xs font-bold uppercase tracking-widest">出版社</th>
-                            <th class="px-6 py-4 text-left text-xs font-bold uppercase tracking-widest">発刊日</th>
-                            <th class="px-6 py-4 text-left text-xs font-bold uppercase tracking-widest">タイトル・内容</th>
-                            <th class="px-6 py-4 text-left text-xs font-bold uppercase tracking-widest whitespace-nowrap">検知日</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-100">
+            <div class="bg-white shadow-2xl rounded-3xl overflow-hidden border border-gray-200">
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead>
+                            <tr class="bg-blue-900 text-white shadow-md">
+                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Status</th>
+                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Publisher</th>
+                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Pub Date</th>
+                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Content Title</th>
+                                <th class="px-6 py-5 text-left text-xs font-black uppercase tracking-tighter">Detected</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
     """
     for row in display_data:
         is_new = "新着" in row['status']
-        row_cls = "bg-red-50/50" if is_new else ""
-        badge_cls = "status-new" if is_new else "status-old"
+        row_cls = "bg-red-50/70" if is_new else ""
+        badge_cls = "status-new shadow-sm" if is_new else "status-old"
         
         html_content += f"""
-                        <tr class="hover:bg-blue-50 transition-colors {row_cls}">
-                            <td class="px-6 py-4 whitespace-nowrap"><span class="px-3 py-1 rounded-full text-xs font-black {badge_cls}">{row['status']}</span></td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-700">{row['publisher']}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-blue-800 font-bold">{row['pub_date']}</td>
-                            <td class="px-6 py-4 text-sm">
-                                <a href="{row['url']}" target="_blank" class="text-blue-600 hover:text-blue-900 font-semibold decoration-blue-200 decoration-2 underline-offset-4 hover:underline">
-                                    {row['title']}
-                                </a>
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-mono">{row['detect_date']}</td>
-                        </tr>
+                            <tr class="hover:bg-blue-50 transition-all {row_cls}">
+                                <td class="px-6 py-5 whitespace-nowrap"><span class="px-4 py-1.5 rounded-full text-[10px] font-black {badge_cls}">{row['status']}</span></td>
+                                <td class="px-6 py-5 whitespace-nowrap text-sm font-black text-gray-600">{row['publisher']}</td>
+                                <td class="px-6 py-5 whitespace-nowrap text-sm pub-date-box text-blue-800 font-bold">{row['pub_date']}</td>
+                                <td class="px-6 py-5 text-sm leading-relaxed">
+                                    <a href="{row['url']}" target="_blank" class="text-blue-600 hover:text-blue-900 font-bold border-b border-transparent hover:border-blue-900 pb-0.5 transition-all">
+                                        {row['title']}
+                                    </a>
+                                </td>
+                                <td class="px-6 py-5 whitespace-nowrap text-xs text-gray-400 font-mono">{row['detect_date']}</td>
+                            </tr>
         """
     html_content += """
-                    </tbody>
-                </table>
+                        </tbody>
+                    </table>
+                </div>
             </div>
-            <footer class="mt-8 text-center text-gray-400 text-xs">
-                &copy; 2026 診療ガイドライン更新監視システム | 自動実行中
+            <footer class="mt-12 text-center text-gray-400 text-xs font-bold italic">
+                &copy; 2026 診療ガイドライン更新監視システム | 毎日AM8:00自動更新
             </footer>
         </div>
     </body>
@@ -252,6 +286,7 @@ def main():
     
     save_history(history)
     
+    # 既存レポートとの統合
     if os.path.exists(REPORT_FILE):
         try:
             old_df = pd.read_csv(REPORT_FILE)
@@ -278,7 +313,7 @@ def main():
     if not df.empty:
         df = df.drop_duplicates(subset=["タイトル内容"], keep="first")
         df.to_csv(REPORT_FILE, index=False, encoding="utf-8-sig")
-        generate_html(df.head(200))
+        generate_html(df.head(250))
     
 if __name__ == "__main__":
     main()
